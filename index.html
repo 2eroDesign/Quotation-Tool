@@ -195,8 +195,10 @@
   .quote-card .qc-name{font-weight:900;font-size:1.08em;color:var(--ink);}
   .quote-card .qc-meta{font-size:.82em;color:var(--ink-soft);margin-top:3px;}
   .quote-card .qc-amt{font-weight:900;color:var(--teal-dark);font-size:1.15em;white-space:nowrap;}
-  .qc-actions{display:flex;gap:6px;}
+  .qc-actions{display:flex;gap:6px;align-items:center;}
   .qc-actions button{background:none;border:none;font-size:1.15em;cursor:pointer;padding:6px;color:var(--ink-soft);}
+  .qc-move-select{font-size:.82em;font-family:inherit;color:var(--ink-soft);background:var(--paper);
+    border:1px solid var(--line);border-radius:8px;padding:5px 6px;max-width:110px;}
   .empty-state{text-align:center;padding:60px 20px;color:var(--ink-soft);}
   .empty-state .big{font-size:3em;margin-bottom:10px;}
   .hero-new{width:100%;border:none;background:var(--teal);color:#fff;border-radius:16px;padding:20px;
@@ -682,19 +684,6 @@ function deleteFolder(id){
   index.forEach(q=>{ if(q.folderId===id) q.folderId=null; });
   saveFolders(); saveIndex(); renderList();
 }
-function moveQuoteToFolder(quoteId){
-  const options = ['未分類', ...folders.map(f=>f.name)];
-  const choice = prompt('要把這份報價單移到哪個資料夾？\n（請輸入名稱，或輸入「未分類」移出資料夾）\n\n目前可用：'+options.join('、'), '');
-  if(choice===null) return;
-  const trimmed = choice.trim();
-  const entry = index.find(q=>q.id===quoteId); if(!entry) return;
-  if(!trimmed || trimmed==='未分類'){ entry.folderId=null; saveIndex(); renderList(); toast('已移出資料夾'); return; }
-  const folder = folders.find(f=>f.name===trimmed);
-  if(!folder){ toast('找不到這個資料夾，請先用「📁 新增資料夾」建立'); return; }
-  entry.folderId = folder.id;
-  saveIndex(); renderList();
-  toast('已移到「'+folder.name+'」');
-}
 function saveIndex(){ fbSet('quote-index', JSON.stringify(index)).catch(e=>console.error(e)); }
 let saveTimer=null;
 function saveState(){
@@ -786,10 +775,10 @@ function showView(v){
 }
 function goHome(){ renderList(); showView('list'); }
 
-async function createQuote(){
+async function createQuote(folderId){
   currentId = newId();
   state = defaultState();
-  index.unshift({id:currentId, project:"", contact:"", date:state.meta.date, total:0, updatedAt:Date.now(), folderId:null});
+  index.unshift({id:currentId, project:"", contact:"", date:state.meta.date, total:0, updatedAt:Date.now(), folderId:folderId||null});
   saveIndex(); saveState();
   renderEditor(); showView('editor');
 }
@@ -860,6 +849,10 @@ function renderList(){
     if(g.id!==null){
       const facts = document.createElement('span'); facts.className='folder-actions';
       facts.style.display='flex'; facts.style.gap='6px';
+      const addHereBtn = document.createElement('button');
+      addHereBtn.textContent='➕'; addHereBtn.setAttribute('aria-label','在此資料夾新增報價單');
+      addHereBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:.95em;';
+      addHereBtn.onclick=(e)=>{ e.stopPropagation(); createQuote(g.id); };
       const renameBtn = document.createElement('button');
       renameBtn.textContent='✏️'; renameBtn.setAttribute('aria-label','重新命名');
       renameBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:.95em;';
@@ -868,7 +861,7 @@ function renderList(){
       delFolderBtn.textContent='🗑'; delFolderBtn.setAttribute('aria-label','刪除資料夾');
       delFolderBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:.95em;';
       delFolderBtn.onclick=(e)=>{ e.stopPropagation(); deleteFolder(g.id); };
-      facts.appendChild(renameBtn); facts.appendChild(delFolderBtn);
+      facts.appendChild(addHereBtn); facts.appendChild(renameBtn); facts.appendChild(delFolderBtn);
       right.appendChild(facts);
     }
     const chev = document.createElement('span'); chev.className='chevron'; chev.textContent='▾';
@@ -892,11 +885,28 @@ function renderList(){
       rightWrap.style.display='flex'; rightWrap.style.alignItems='center'; rightWrap.style.gap='10px';
       const amt = document.createElement('div'); amt.className='qc-amt'; amt.textContent = fmt(q.total||0);
       const actions = document.createElement('div'); actions.className='qc-actions';
-      const moveBtn = document.createElement('button'); moveBtn.textContent='📂'; moveBtn.setAttribute('aria-label','移動到其他資料夾');
-      moveBtn.onclick = (e)=>{ e.stopPropagation(); moveQuoteToFolder(q.id); };
+      const moveSelect = document.createElement('select');
+      moveSelect.className = 'qc-move-select';
+      moveSelect.setAttribute('aria-label','移動到資料夾');
+      const noneOpt = document.createElement('option'); noneOpt.value=''; noneOpt.textContent='📂 未分類';
+      moveSelect.appendChild(noneOpt);
+      folders.forEach(f=>{
+        const opt = document.createElement('option'); opt.value=f.id; opt.textContent='📁 '+f.name;
+        moveSelect.appendChild(opt);
+      });
+      moveSelect.value = q.folderId || '';
+      moveSelect.onclick = (e)=>{ e.stopPropagation(); };
+      moveSelect.onchange = (e)=>{
+        e.stopPropagation();
+        const val = e.target.value;
+        q.folderId = val || null;
+        saveIndex();
+        renderList();
+        toast(val ? ('已移到「'+(folders.find(f=>f.id===val)?.name||'')+'」') : '已移出資料夾');
+      };
       const delBtn = document.createElement('button'); delBtn.textContent='🗑'; delBtn.setAttribute('aria-label','刪除');
       delBtn.onclick = (e)=>{ e.stopPropagation(); if(confirm(`確定刪除「${q.project||'此報價單'}」嗎？`)){ deleteQuote(q.id); renderList(); } };
-      actions.appendChild(moveBtn); actions.appendChild(delBtn);
+      actions.appendChild(moveSelect); actions.appendChild(delBtn);
       rightWrap.appendChild(amt); rightWrap.appendChild(actions);
       card.appendChild(left); card.appendChild(rightWrap);
       body.appendChild(card);
