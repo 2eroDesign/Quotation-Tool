@@ -12,11 +12,10 @@
 <meta name="apple-mobile-web-app-title" content="2ERO Quotation">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png" type="image/png">
-<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-app-compat.js" crossorigin="anonymous"></script>
-<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-auth-compat.js" crossorigin="anonymous"></script>
-<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore-compat.js" crossorigin="anonymous"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet"></noscript>
 <style>
   :root{
     --ink:#3E2A1E; --ink-soft:#7A5C46; --paper:#F3E7D8; --card:#FFFBF5; --line:#E4D3BB;
@@ -303,6 +302,13 @@
         <div class="hint">會顯示在報價單左上角，PDF 也會一併印出</div>
       </div>
     </div>
+    <div class="field" style="margin-bottom:14px;">
+      <label>公司名稱（PDF 抬頭）</label>
+      <div id="company-choice-list" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;"></div>
+      <div id="company-custom-fields" class="hidden" style="margin-top:10px;">
+        <input type="text" id="f-company-custom" placeholder="請輸入公司名稱">
+      </div>
+    </div>
     <div class="grid2">
       <div class="field">
         <label for="f-doctitle">單據名稱</label>
@@ -314,7 +320,7 @@
       </div>
       <div class="field">
         <label for="f-contact">聯絡人</label>
-        <input type="text" id="f-contact" placeholder="例：王小明">
+        <input type="text" id="f-contact" placeholder="例：王貳一">
       </div>
       <div class="field">
         <label for="f-phone">聯絡電話</label>
@@ -323,10 +329,6 @@
       <div class="field">
         <label for="f-date">報價日期</label>
         <input type="date" id="f-date">
-      </div>
-      <div class="field">
-        <label for="f-quoteno">報價編號</label>
-        <input type="text" id="f-quoteno" placeholder="自動產生，可自行修改">
       </div>
       <div class="field">
         <label for="f-valid">有效天數</label>
@@ -457,6 +459,9 @@
   </div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-app-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-auth-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore-compat.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
@@ -502,6 +507,10 @@ const CATEGORY_FIXED_NOTES = {
   "水電工程":"備注：造型水電面蓋、消防設備更改費用另計",
   "油漆工程":"備注：油漆原牆面透批工程之費用另計",
 };
+
+const COMPANY_PRESETS = [
+  {id:'co1', label:'貳零空間設計 2ERO Design', name:'貳零空間設計 2ERO Design'},
+];
 
 const BANK_PRESETS = [
   {id:'bank1', label:'貳零室內裝修設有限公司', bank:"822-中國信託-北高雄分行", account:"6135-4075-2221", accountName:"貳零室內裝修設有限公司"},
@@ -612,14 +621,16 @@ auth.onAuthStateChanged(async (user)=>{
 function defaultState(){
   const today = new Date().toISOString().slice(0,10);
   return {
-    meta:{project:"",contact:"",phone:"",address:"",date:today,quoteNo:genQuoteNo(),validDays:10,docTitle:"工程報價單"},
+    meta:{project:"",contact:"",phone:"",address:"",date:today,validDays:10,docTitle:"工程報價單"},
+    companyChoice:"co1",
+    customCompanyName:"",
     categories: DEFAULT_CATS.map((name,i)=>({id:"c"+i+"_"+Date.now()+Math.random().toString(36).slice(2,5), name, collapsed:false, items:[]})),
     taxOn:true,
     discount:"",
     importantNote:"本報價單不含（上述工程外）之工程費用",
     bankChoice:"bank1",
     customBank:{bank:"",account:"",accountName:""},
-    notes:"2. 因材料選購及實際施工數量差異，最終總價可能調整；未列於本單之項目均屬追加。\n3. 工程完成 7 天內驗收完畢並付清尾款。\n4. 驗收完成日起，非因外力破壞或使用不當，保固一年。\n5. 本報價單有效期間為報價日期後 10 天。",
+    notes:"1. 因材料選購及實際施工數量差異，最終總價可能調整；未列於本單之項目均屬追加。\n2. 工程完成 7 天內驗收完畢並付清尾款。\n3. 驗收完成日起，非因外力破壞或使用不當，保固一年。\n4. 本報價單有效期間為報價日期後 10 天。",
     sigs:{designer:null, client:null}
   };
 }
@@ -709,8 +720,17 @@ function saveState(){
 
 /* ================= Utilities ================= */
 function fmt(n){ n = Math.round(n||0); return "$" + n.toLocaleString('zh-Hant-TW'); }
+function getSelectedCompanyName(){
+  const choice = state.companyChoice || 'co1';
+  if(choice==='custom') return state.customCompanyName || '';
+  const preset = COMPANY_PRESETS.find(c=>c.id===choice);
+  return preset ? preset.name : '';
+}
 function getSelectedBankInfo(){
   const choice = state.bankChoice || 'bank1';
+  if(choice==='none'){
+    return { bank:'', account:'', accountName:'' };
+  }
   if(choice==='custom'){
     return {
       bank: state.customBank?.bank || '',
@@ -786,7 +806,6 @@ async function openQuote(id){
 function duplicateCurrentQuote(){
   const clone = JSON.parse(JSON.stringify(state));
   clone.meta.project = (clone.meta.project||'未命名報價單') + '（複製）';
-  clone.meta.quoteNo = genQuoteNo();
   clone.meta.date = new Date().toISOString().slice(0,10);
   clone.sigs = {designer:null, client:null};
   const id = newId();
@@ -889,13 +908,13 @@ function renderList(){
 
 /* ================= Editor rendering ================= */
 function renderEditor(){
+  renderCompanyChoices();
   document.getElementById('f-doctitle').value = state.meta.docTitle || '工程報價單';
   document.getElementById('f-project').value = state.meta.project;
   document.getElementById('f-contact').value = state.meta.contact;
   document.getElementById('f-phone').value = state.meta.phone;
   document.getElementById('f-address').value = state.meta.address;
   document.getElementById('f-date').value = state.meta.date;
-  document.getElementById('f-quoteno').value = state.meta.quoteNo || genQuoteNo();
   document.getElementById('f-valid').value = state.meta.validDays || 10;
   document.getElementById('f-important').value = state.importantNote || '';
   document.getElementById('f-notes').value = state.notes;
@@ -909,10 +928,33 @@ function renderEditor(){
   setupSigPad('sig-designer');
   setupSigPad('sig-client');
 }
+function renderCompanyChoices(){
+  const wrap = document.getElementById('company-choice-list');
+  wrap.innerHTML = '';
+  const options = [...COMPANY_PRESETS.map(c=>({id:c.id, label:c.label})), {id:'custom', label:'自行輸入'}];
+  const current = state.companyChoice || 'co1';
+  options.forEach(opt=>{
+    const row = document.createElement('label');
+    row.className = 'bank-choice' + (current===opt.id ? ' selected' : '');
+    const radio = document.createElement('input');
+    radio.type='radio'; radio.name='company-choice'; radio.value=opt.id; radio.checked = current===opt.id;
+    radio.onchange = ()=>{ state.companyChoice = opt.id; saveState(); renderCompanyChoices(); };
+    const label = document.createElement('span'); label.className='bc-label'; label.textContent = opt.label;
+    row.appendChild(radio); row.appendChild(label);
+    wrap.appendChild(row);
+  });
+  const customFieldsEl = document.getElementById('company-custom-fields');
+  if(current==='custom'){
+    customFieldsEl.classList.remove('hidden');
+    document.getElementById('f-company-custom').value = state.customCompanyName || '';
+  } else {
+    customFieldsEl.classList.add('hidden');
+  }
+}
 function renderBankChoices(){
   const wrap = document.getElementById('bank-choice-list');
   wrap.innerHTML = '';
-  const options = [...BANK_PRESETS.map(b=>({id:b.id, label:b.label})), {id:'custom', label:'自行輸入（第三組）'}];
+  const options = [...BANK_PRESETS.map(b=>({id:b.id, label:b.label})), {id:'custom', label:'自行輸入'}, {id:'none', label:'無需顯示匯款資訊'}];
   const current = state.bankChoice || 'bank1';
   options.forEach(opt=>{
     const row = document.createElement('label');
@@ -932,6 +974,10 @@ function renderBankChoices(){
     document.getElementById('f-bank-custom-bank').value = state.customBank?.bank || '';
     document.getElementById('f-bank-custom-account').value = state.customBank?.account || '';
     document.getElementById('f-bank-custom-name').value = state.customBank?.accountName || '';
+  } else if(current==='none'){
+    customFieldsEl.classList.add('hidden');
+    previewEl.classList.remove('hidden');
+    previewEl.innerHTML = `<div style="color:var(--ink-soft);">這份報價單的 PDF 不會顯示匯款資訊區塊</div>`;
   } else {
     customFieldsEl.classList.add('hidden');
     previewEl.classList.remove('hidden');
@@ -1203,13 +1249,13 @@ function updateSummaryOnly(){
 function onTaxToggle(){ state.taxOn = document.getElementById('tax-toggle').checked; saveState(); updateSummaryOnly(); }
 
 function bindMeta(){
+  document.getElementById('f-company-custom').addEventListener('input', e=>{ state.customCompanyName=e.target.value; saveState(); });
   document.getElementById('f-doctitle').addEventListener('input', e=>{ state.meta.docTitle=e.target.value; saveState(); });
   document.getElementById('f-project').addEventListener('input', e=>{ state.meta.project=e.target.value; document.getElementById('topbar-label').textContent = e.target.value || '未命名報價單'; saveState(); });
   document.getElementById('f-contact').addEventListener('input', e=>{ state.meta.contact=e.target.value; saveState(); });
   document.getElementById('f-phone').addEventListener('input', e=>{ state.meta.phone=e.target.value; saveState(); });
   document.getElementById('f-address').addEventListener('input', e=>{ state.meta.address=e.target.value; saveState(); });
   document.getElementById('f-date').addEventListener('input', e=>{ state.meta.date=e.target.value; saveState(); });
-  document.getElementById('f-quoteno').addEventListener('input', e=>{ state.meta.quoteNo=e.target.value; saveState(); });
   document.getElementById('f-valid').addEventListener('input', e=>{ state.meta.validDays=e.target.value; saveState(); });
   document.getElementById('f-important').addEventListener('input', e=>{ state.importantNote=e.target.value; saveState(); });
   document.getElementById('f-bank-custom-bank').addEventListener('input', e=>{ if(!state.customBank) state.customBank={}; state.customBank.bank=e.target.value; saveState(); });
@@ -1321,13 +1367,12 @@ function buildPrintableNode(){
     <div style="display:flex;align-items:center;gap:16px;border-bottom:3px solid #8B5E3C;padding-bottom:16px;margin-bottom:20px;">
       ${logoHtml}
       <div>
-        <div style="font-size:20px;font-weight:900;color:#5C3A22;">貳零空間設計 2ero Design</div>
+        <div style="font-size:20px;font-weight:900;color:#5C3A22;">${escapeHtml(getSelectedCompanyName() || '貳零空間設計 2ERO Design')}</div>
         <div style="font-size:26px;font-weight:900;color:#2b2118;margin-top:4px;">${escapeHtml(docTitle)}</div>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:14px;margin-bottom:22px;">
       <div><b>工程案名：</b>${escapeHtml(state.meta.project||'')}</div>
-      <div><b>報價編號：</b>${escapeHtml(state.meta.quoteNo||'')}</div>
       <div><b>聯絡人：</b>${escapeHtml(state.meta.contact||'')}</div>
       <div><b>報價日期：</b>${escapeHtml(state.meta.date||'')}</div>
       <div><b>聯絡電話：</b>${escapeHtml(state.meta.phone||'')}</div>
@@ -1411,13 +1456,16 @@ function buildPrintableNode(){
     </div>`;
 
   const selectedBank = getSelectedBankInfo();
-  html += `
-    <div style="margin-top:20px;padding:14px 16px;background:#EFDFC8;border-radius:10px;font-size:12px;line-height:1.9;color:#3E2A1E;">
-      <div style="font-weight:900;color:#5C3A22;margin-bottom:4px;">匯款資訊</div>
-      <div><b>銀行代號：</b>${escapeHtml(selectedBank.bank)}</div>
-      <div><b>匯款帳號：</b>${escapeHtml(selectedBank.account)}</div>
-      <div><b>匯款戶名：</b>${escapeHtml(selectedBank.accountName)}</div>
-    </div>`;
+  const hasBankInfo = !!(selectedBank.bank || selectedBank.account || selectedBank.accountName);
+  if(hasBankInfo){
+    html += `
+      <div style="margin-top:20px;padding:14px 16px;background:#EFDFC8;border-radius:10px;font-size:12px;line-height:1.9;color:#3E2A1E;">
+        <div style="font-weight:900;color:#5C3A22;margin-bottom:4px;">匯款資訊</div>
+        <div><b>銀行代號：</b>${escapeHtml(selectedBank.bank)}</div>
+        <div><b>匯款帳號：</b>${escapeHtml(selectedBank.account)}</div>
+        <div><b>匯款戶名：</b>${escapeHtml(selectedBank.accountName)}</div>
+      </div>`;
+  }
 
   const desSig = state.sigs.designer ? `<img src="${state.sigs.designer}" style="height:60px;">` : '<div style="height:60px;"></div>';
   const cliSig = state.sigs.client ? `<img src="${state.sigs.client}" style="height:60px;">` : '<div style="height:60px;"></div>';
@@ -1457,6 +1505,18 @@ async function canvasToPdfBlob(canvas){
   }
   return pdf.output('blob');
 }
+function getPdfFilename(){
+  let y=0,m=0,d=0;
+  try{
+    const dt = state.meta.date ? new Date(state.meta.date) : new Date();
+    y = dt.getFullYear() - 1911;
+    m = dt.getMonth()+1;
+    d = dt.getDate();
+  }catch(e){}
+  const rocDate = `${y}${String(m).padStart(2,'0')}${String(d).padStart(2,'0')}`;
+  const project = (state.meta.project || '報價單').trim();
+  return `${rocDate}${project}.pdf`;
+}
 async function downloadPDF(){
   if(!window.html2canvas || !window.jspdf){ toast('PDF 功能載入中，請稍後再試'); return; }
   const btn = document.getElementById('pdf-btn');
@@ -1466,7 +1526,7 @@ async function downloadPDF(){
     const blob = await canvasToPdfBlob(canvas);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = (state.meta.project || '報價單') + '.pdf';
+    a.href = url; a.download = getPdfFilename();
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url), 5000);
     toast('PDF 已下載完成');
@@ -1480,7 +1540,7 @@ async function shareQuote(){
   try{
     const canvas = await buildAndCapture();
     const blob = await canvasToPdfBlob(canvas);
-    const filename = (state.meta.project || '報價單') + '.pdf';
+    const filename = getPdfFilename();
     const file = new File([blob], filename, {type:'application/pdf'});
     if(navigator.canShare && navigator.canShare({files:[file]})){
       await navigator.share({files:[file], title:filename, text:'報價單 - ' + (state.meta.project||'')});
