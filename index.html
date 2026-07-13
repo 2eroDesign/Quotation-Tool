@@ -719,6 +719,7 @@ async function doSaveNow(){
   if(!currentId) return;
   try{
     await fbSet('quote:'+currentId, JSON.stringify(state));
+    quoteCache.set(currentId, JSON.parse(JSON.stringify(state)));
     const sub = grandSubtotal();
     const tax = state.taxOn ? sub*0.05 : 0;
     const entry = index.find(q=>q.id===currentId);
@@ -831,14 +832,29 @@ async function createQuote(folderId){
   currentId = newId();
   state = defaultState();
   index.unshift({id:currentId, project:"", contact:"", date:state.meta.date, total:0, updatedAt:Date.now(), folderId:folderId||null});
+  quoteCache.set(currentId, JSON.parse(JSON.stringify(state)));
   saveIndex(); saveState();
   renderEditor(); showView('editor');
 }
+const quoteCache = new Map(); // 同一次使用期間的記憶體快取，避免重複讀取雲端
 async function openQuote(id){
   try{
+    if(quoteCache.has(id)){
+      state = JSON.parse(JSON.stringify(quoteCache.get(id)));
+      currentId = id;
+      renderEditor(); showView('editor');
+      // 背景仍確認一次雲端是否有更新（例如其他裝置改過），有的話悄悄更新畫面
+      fbGet('quote:'+id).then(res=>{
+        if(res && res.value){
+          quoteCache.set(id, JSON.parse(res.value));
+        }
+      }).catch(()=>{});
+      return;
+    }
     const res = await fbGet('quote:'+id);
     if(res && res.value){
       state = JSON.parse(res.value);
+      quoteCache.set(id, JSON.parse(res.value));
       currentId = id;
       renderEditor(); showView('editor');
     }
