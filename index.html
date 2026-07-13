@@ -293,6 +293,18 @@
 </div>
 
 <!-- ============ EDITOR VIEW ============ -->
+<div id="pdf-preview-modal" class="hidden" style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.85);">
+  <div style="position:absolute;top:10px;right:10px;left:10px;display:flex;justify-content:space-between;align-items:center;z-index:2;">
+    <span style="color:#fff;font-weight:900;">PDF 預覽</span>
+    <div style="display:flex;gap:8px;">
+      <a id="pdf-preview-download" href="#" download="" style="background:#8B5E3C;color:#fff;border:none;border-radius:8px;padding:10px 16px;font-weight:900;text-decoration:none;">下載</a>
+      <button onclick="closePdfPreview()" style="background:#B24C32;color:#fff;border:none;border-radius:8px;padding:10px 16px;font-weight:900;">✕ 關閉</button>
+    </div>
+  </div>
+  <div id="pdf-preview-scroll" style="position:absolute;top:56px;left:0;right:0;bottom:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px;box-sizing:border-box;">
+    <div id="pdf-preview-pages" style="display:flex;flex-direction:column;align-items:center;gap:16px;"></div>
+  </div>
+</div>
 <div class="wrap hidden" id="view-editor">
 
   <div class="card">
@@ -455,6 +467,7 @@
       <div class="summary-total"><span class="lbl">總金額</span><span class="val" id="sum-total">$0</span></div>
     </div>
     <div class="summary-actions">
+      <button class="btn btn-outline" id="save-btn" onclick="manualSave()">💾 儲存</button>
       <button class="btn btn-outline" id="pdf-btn" onclick="downloadPDF()">📄 下載 PDF</button>
       <button class="btn btn-teal" id="share-btn" onclick="shareQuote()">🔗 分享</button>
     </div>
@@ -526,6 +539,7 @@ let currentId = null;
 let view = 'list';
 let companyLogo = null;
 let folders = [];
+let uncategorizedLabel = '未分類';
 
 /* ================= Firebase Auth & Storage ================= */
 const firebaseConfig = {
@@ -656,8 +670,22 @@ async function loadIndex(){
     const res = await fbGet('folders');
     folders = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ folders = []; }
+  try{
+    const res = await fbGet('uncategorized-label');
+    uncategorizedLabel = res && res.value ? res.value : '未分類';
+  }catch(e){ uncategorizedLabel = '未分類'; }
 }
 function saveFolders(){ fbSet('folders', JSON.stringify(folders)).catch(e=>console.error(e)); }
+function saveUncategorizedLabel(){ fbSet('uncategorized-label', uncategorizedLabel).catch(e=>console.error(e)); }
+function renameUncategorized(){
+  const v = prompt('重新命名這個分類：', uncategorizedLabel);
+  if(v===null) return;
+  const trimmed = v.trim();
+  if(!trimmed){ toast('名稱不能是空白'); return; }
+  uncategorizedLabel = trimmed;
+  saveUncategorizedLabel();
+  renderList();
+}
 function addFolder(){
   const inp = document.getElementById('new-folder-name');
   const name = inp.value.trim();
@@ -679,32 +707,56 @@ function renameFolder(id){
 }
 function deleteFolder(id){
   const f = folders.find(x=>x.id===id); if(!f) return;
-  if(!confirm(`確定刪除資料夾「${f.name}」嗎？裡面的報價單不會被刪除，會移回「未分類」。`)) return;
+  if(!confirm(`確定刪除資料夾「${f.name}」嗎？裡面的報價單不會被刪除，會移回「${uncategorizedLabel}」。`)) return;
   folders = folders.filter(x=>x.id!==id);
   index.forEach(q=>{ if(q.folderId===id) q.folderId=null; });
   saveFolders(); saveIndex(); renderList();
 }
 function saveIndex(){ fbSet('quote-index', JSON.stringify(index)).catch(e=>console.error(e)); }
 let saveTimer=null;
+let saveInFlight=null;
+async function doSaveNow(){
+  if(!currentId) return;
+  try{
+    await fbSet('quote:'+currentId, JSON.stringify(state));
+    const sub = grandSubtotal();
+    const tax = state.taxOn ? sub*0.05 : 0;
+    const entry = index.find(q=>q.id===currentId);
+    if(entry){
+      entry.project = state.meta.project || "未命名報價單";
+      entry.contact = state.meta.contact;
+      entry.date = state.meta.date;
+      entry.total = sub+tax;
+      entry.updatedAt = Date.now();
+      saveIndex();
+    }
+  }catch(e){ console.error('save failed', e); throw e; }
+}
 function saveState(){
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async ()=>{
-    if(!currentId) return;
-    try{
-      await fbSet('quote:'+currentId, JSON.stringify(state));
-      const sub = grandSubtotal();
-      const tax = state.taxOn ? sub*0.05 : 0;
-      const entry = index.find(q=>q.id===currentId);
-      if(entry){
-        entry.project = state.meta.project || "未命名報價單";
-        entry.contact = state.meta.contact;
-        entry.date = state.meta.date;
-        entry.total = sub+tax;
-        entry.updatedAt = Date.now();
-        saveIndex();
-      }
-    }catch(e){ console.error('save failed', e); }
-  }, 350);
+  saveTimer = setTimeout(()=>{ saveTimer = null; saveInFlight = doSaveNow(); }, 350);
+}
+async function flushSave(){
+  if(saveTimer){
+    // 還在等待自動存檔的空檔期，直接取消並立刻存一次最新內容（只存一次）
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    saveInFlight = doSaveNow();
+  }
+  // 如果已經有一次存檔正在進行/剛完成，就只等這一次，不重複再存一次
+  if(saveInFlight) await saveInFlight;
+}
+async function manualSave(){
+  const btn = document.getElementById('save-btn');
+  if(btn) btn.disabled = true;
+  try{
+    await flushSave();
+    toast('已儲存 ✓');
+  }catch(e){
+    toast('儲存失敗，請檢查網路後再試一次');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
 }
 
 /* ================= Utilities ================= */
@@ -812,6 +864,27 @@ function confirmDeleteCurrent(){
     deleteQuote(currentId); goHome();
   }
 }
+async function renameQuoteFromList(id){
+  const entry = index.find(q=>q.id===id);
+  if(!entry) return;
+  const v = prompt('重新命名這份報價單：', entry.project||'');
+  if(v===null) return;
+  const trimmed = v.trim();
+  entry.project = trimmed || '未命名報價單';
+  entry.updatedAt = Date.now();
+  saveIndex();
+  renderList();
+  try{
+    const res = await fbGet('quote:'+id);
+    if(res && res.value){
+      const doc = JSON.parse(res.value);
+      doc.meta = doc.meta || {};
+      doc.meta.project = entry.project==='未命名報價單' ? '' : entry.project;
+      await fbSet('quote:'+id, JSON.stringify(doc));
+      if(currentId===id){ state.meta.project = doc.meta.project; }
+    }
+  }catch(e){ console.error('rename sync failed', e); }
+}
 function deleteQuote(id){
   index = index.filter(q=>q.id!==id);
   saveIndex();
@@ -828,7 +901,7 @@ function renderList(){
   empty.classList.add('hidden');
 
   const groupList = folders.map(f=>({id:f.id, name:f.name}));
-  groupList.push({id:null, name:'未分類'});
+  groupList.push({id:null, name:uncategorizedLabel});
 
   groupList.forEach(g=>{
     const quotes = index.filter(q=>(q.folderId||null)===g.id).sort((a,b)=>b.updatedAt-a.updatedAt);
@@ -863,6 +936,15 @@ function renderList(){
       delFolderBtn.onclick=(e)=>{ e.stopPropagation(); deleteFolder(g.id); };
       facts.appendChild(addHereBtn); facts.appendChild(renameBtn); facts.appendChild(delFolderBtn);
       right.appendChild(facts);
+    } else {
+      const facts = document.createElement('span'); facts.className='folder-actions';
+      facts.style.display='flex'; facts.style.gap='6px';
+      const renameBtn = document.createElement('button');
+      renameBtn.textContent='✏️'; renameBtn.setAttribute('aria-label','重新命名');
+      renameBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:.95em;';
+      renameBtn.onclick=(e)=>{ e.stopPropagation(); renameUncategorized(); };
+      facts.appendChild(renameBtn);
+      right.appendChild(facts);
     }
     const chev = document.createElement('span'); chev.className='chevron'; chev.textContent='▾';
     right.appendChild(chev);
@@ -888,7 +970,7 @@ function renderList(){
       const moveSelect = document.createElement('select');
       moveSelect.className = 'qc-move-select';
       moveSelect.setAttribute('aria-label','移動到資料夾');
-      const noneOpt = document.createElement('option'); noneOpt.value=''; noneOpt.textContent='📂 未分類';
+      const noneOpt = document.createElement('option'); noneOpt.value=''; noneOpt.textContent='📂 '+uncategorizedLabel;
       moveSelect.appendChild(noneOpt);
       folders.forEach(f=>{
         const opt = document.createElement('option'); opt.value=f.id; opt.textContent='📁 '+f.name;
@@ -906,7 +988,9 @@ function renderList(){
       };
       const delBtn = document.createElement('button'); delBtn.textContent='🗑'; delBtn.setAttribute('aria-label','刪除');
       delBtn.onclick = (e)=>{ e.stopPropagation(); if(confirm(`確定刪除「${q.project||'此報價單'}」嗎？`)){ deleteQuote(q.id); renderList(); } };
-      actions.appendChild(moveSelect); actions.appendChild(delBtn);
+      const renameQBtn = document.createElement('button'); renameQBtn.textContent='✏️'; renameQBtn.setAttribute('aria-label','重新命名報價單');
+      renameQBtn.onclick = (e)=>{ e.stopPropagation(); renameQuoteFromList(q.id); };
+      actions.appendChild(renameQBtn); actions.appendChild(moveSelect); actions.appendChild(delBtn);
       rightWrap.appendChild(amt); rightWrap.appendChild(actions);
       card.appendChild(left); card.appendChild(rightWrap);
       body.appendChild(card);
@@ -1390,13 +1474,14 @@ function buildPrintableNode(){
       <div style="grid-column:1/-1;"><b>工程地址：</b>${escapeHtml(state.meta.address||'')}</div>
     </div>`;
 
+  const colgroupHtml = `<colgroup><col style="width:8%"><col style="width:42%"><col style="width:10%"><col style="width:10%"><col style="width:15%"><col style="width:15%"></colgroup>`;
   state.categories.forEach((cat,ci)=>{
     if(cat.items.length===0) return;
     const numChar = CAT_NUM[ci] || (ci+1);
     let visibleNo = 0;
-    const rows = cat.items.map((it)=>{
+    const rowHtmls = cat.items.map((it)=>{
       if(it.type==='header'){
-        return `<tr><td colspan="6" style="padding:8px 10px;background:#F6EFE2;font-weight:900;color:#5C3A22;border:1px solid #e4d3bb;">${escapeHtml(it.name)}</td></tr>`;
+        return `<tr class="pdf-row"><td colspan="6" style="padding:8px 10px;background:#F6EFE2;font-weight:900;color:#5C3A22;border:1px solid #e4d3bb;">${escapeHtml(it.name)}</td></tr>`;
       }
       visibleNo++;
       const lines = String(it.name||'').split('\n').filter(l=>l.trim()!=='');
@@ -1408,7 +1493,7 @@ function buildPrintableNode(){
       const noteColor = it.noteColor==='red' ? '#B24C32' : '#7a5c46';
       const noteHtml = it.note ? `<div style="font-size:11px;color:${noteColor};font-weight:${it.noteColor==='red'?'700':'400'};margin-top:2px;">${escapeHtml(it.note)}</div>` : '';
       return `
-      <tr>
+      <tr class="pdf-row">
         <td style="padding:8px;border:1px solid #e4d3bb;text-align:center;">${visibleNo}</td>
         <td style="padding:8px;border:1px solid #e4d3bb;">${nameHtml}${noteHtml}</td>
         <td style="padding:8px;border:1px solid #e4d3bb;text-align:center;">${isMulti ? '' : escapeHtml(it.unit||'')}</td>
@@ -1416,24 +1501,33 @@ function buildPrintableNode(){
         <td style="padding:8px;border:1px solid #e4d3bb;text-align:right;">${fmt(it.price)}</td>
         <td style="padding:8px;border:1px solid #e4d3bb;text-align:right;">${fmt(itemSubtotal(it))}</td>
       </tr>`;
-    }).join('');
+    });
+    const firstRowHtml = rowHtmls[0] || '';
+    const restRowsHtml = rowHtmls.slice(1).join('');
     const fixedNote = CATEGORY_FIXED_NOTES[cat.name];
-    const fixedNoteHtml = fixedNote ? `<div style="padding:8px 12px;background:#FBE6E4;color:#B24C32;font-size:11px;font-weight:700;line-height:1.6;">${escapeHtml(fixedNote)}</div>` : '';
+    const fixedNoteHtml = fixedNote ? `<div class="pdf-atomic" style="padding:8px 12px;background:#FBE6E4;color:#B24C32;font-size:11px;font-weight:700;line-height:1.6;">${escapeHtml(fixedNote)}</div>` : '';
     html += `
       <div style="margin-bottom:18px;">
-        <div style="background:#EFDFC8;color:#5C3A22;font-weight:900;padding:8px 12px;border-radius:6px 6px 0 0;">${numChar}、${escapeHtml(cat.name)}</div>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-          <thead><tr style="background:#F6EFE2;">
-            <th style="padding:8px;border:1px solid #e4d3bb;">項次</th>
-            <th style="padding:8px;border:1px solid #e4d3bb;">項目名稱</th>
-            <th style="padding:8px;border:1px solid #e4d3bb;">單位</th>
-            <th style="padding:8px;border:1px solid #e4d3bb;">數量</th>
-            <th style="padding:8px;border:1px solid #e4d3bb;">單價</th>
-            <th style="padding:8px;border:1px solid #e4d3bb;">附價</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
+        <div class="pdf-atomic">
+          <div style="background:#EFDFC8;color:#5C3A22;font-weight:900;padding:8px 12px;border-radius:6px 6px 0 0;">${numChar}、${escapeHtml(cat.name)}</div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;">
+            ${colgroupHtml}
+            <thead><tr style="background:#F6EFE2;">
+              <th style="padding:8px;border:1px solid #e4d3bb;">項次</th>
+              <th style="padding:8px;border:1px solid #e4d3bb;">項目名稱</th>
+              <th style="padding:8px;border:1px solid #e4d3bb;">單位</th>
+              <th style="padding:8px;border:1px solid #e4d3bb;">數量</th>
+              <th style="padding:8px;border:1px solid #e4d3bb;">單價</th>
+              <th style="padding:8px;border:1px solid #e4d3bb;">附價</th>
+            </tr></thead>
+            <tbody>${firstRowHtml}</tbody>
+          </table>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;margin-top:-1px;">
+          ${colgroupHtml}
+          <tbody>${restRowsHtml}</tbody>
         </table>
-        <div style="text-align:right;padding:8px 12px;font-weight:900;color:#5C3A22;background:#FBF6EE;">小計：${fmt(catSubtotal(cat))}</div>
+        <div class="pdf-atomic" style="text-align:right;padding:8px 12px;font-weight:900;color:#5C3A22;background:#FBF6EE;">小計：${fmt(catSubtotal(cat))}</div>
         ${fixedNoteHtml}
       </div>`;
   });
@@ -1446,7 +1540,7 @@ function buildPrintableNode(){
     ? `<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:8px;"><span>優惠折扣</span><span>-${fmt(discount)}</span></div>`
     : '';
   html += `
-    <div style="margin-top:10px;padding:14px 18px;background:#5C3A22;color:#fff;border-radius:10px;">
+    <div class="pdf-atomic" style="margin-top:10px;padding:14px 18px;background:#5C3A22;color:#fff;border-radius:10px;">
       <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:4px;"><span>工程小計</span><span>${fmt(sub)}</span></div>
       <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:8px;"><span>營業稅</span><span>${fmt(tax)}</span></div>
       ${discountLine}
@@ -1455,13 +1549,13 @@ function buildPrintableNode(){
 
   if(state.importantNote){
     html += `
-    <div style="margin-top:16px;padding:10px 14px;background:#FBE6E4;border-left:4px solid #B24C32;color:#B24C32;font-size:12px;font-weight:700;line-height:1.6;">
+    <div class="pdf-atomic" style="margin-top:16px;padding:10px 14px;background:#FBE6E4;border-left:4px solid #B24C32;color:#B24C32;font-size:12px;font-weight:700;line-height:1.6;">
       ${escapeHtml(state.importantNote)}
     </div>`;
   }
 
   html += `
-    <div style="margin-top:16px;font-size:12px;color:#3E2A1E;white-space:pre-wrap;line-height:1.7;">
+    <div class="pdf-atomic" style="margin-top:16px;font-size:12px;color:#3E2A1E;white-space:pre-wrap;line-height:1.7;">
       <div style="font-weight:900;margin-bottom:6px;">備註與保固條款：</div>${escapeHtml(state.notes)}
     </div>`;
 
@@ -1469,7 +1563,7 @@ function buildPrintableNode(){
   const hasBankInfo = !!(selectedBank.bank || selectedBank.account || selectedBank.accountName);
   if(hasBankInfo){
     html += `
-      <div style="margin-top:20px;padding:14px 16px;background:#EFDFC8;border-radius:10px;font-size:12px;line-height:1.9;color:#3E2A1E;">
+      <div class="pdf-atomic" style="margin-top:20px;padding:14px 16px;background:#EFDFC8;border-radius:10px;font-size:12px;line-height:1.9;color:#3E2A1E;">
         <div style="font-weight:900;color:#5C3A22;margin-bottom:4px;">匯款資訊</div>
         <div><b>銀行代號：</b>${escapeHtml(selectedBank.bank)}</div>
         <div><b>匯款帳號：</b>${escapeHtml(selectedBank.account)}</div>
@@ -1480,7 +1574,7 @@ function buildPrintableNode(){
   const desSig = state.sigs.designer ? `<img src="${state.sigs.designer}" style="height:60px;">` : '<div style="height:60px;"></div>';
   const cliSig = state.sigs.client ? `<img src="${state.sigs.client}" style="height:60px;">` : '<div style="height:60px;"></div>';
   html += `
-    <div style="display:flex;justify-content:space-between;margin-top:30px;font-size:13px;">
+    <div class="pdf-atomic" style="display:flex;justify-content:space-between;margin-top:30px;font-size:13px;">
       <div style="text-align:center;width:45%;"><div>設計師簽章</div>${desSig}<div style="border-top:1px solid #ccc;margin-top:4px;"></div></div>
       <div style="text-align:center;width:45%;"><div>客戶簽章</div>${cliSig}<div style="border-top:1px solid #ccc;margin-top:4px;"></div></div>
     </div>`;
@@ -1490,30 +1584,88 @@ function buildPrintableNode(){
 }
 async function buildAndCapture(){
   const node = buildPrintableNode();
+  node.id = 'pdf-print-node';
   document.body.appendChild(node);
   const imgs = node.querySelectorAll('img');
   await Promise.all(Array.from(imgs).map(img=> img.complete ? Promise.resolve() : new Promise(res=>{ img.onload=res; img.onerror=res; })));
-  const canvas = await html2canvas(node, {scale:2, backgroundColor:'#ffffff', useCORS:true});
+  let safeBreaks = [];
+  const cssWidth = node.offsetWidth;
+  const canvas = await html2canvas(node, {
+    scale:1.5, backgroundColor:'#ffffff', useCORS:true,
+    onclone: (clonedDoc)=>{
+      try{
+        const clonedEl = clonedDoc.getElementById('pdf-print-node');
+        if(!clonedEl) return;
+        const cloneTop = clonedEl.getBoundingClientRect().top;
+        const protectedEls = clonedEl.querySelectorAll('.pdf-row, .pdf-atomic');
+        safeBreaks = Array.from(protectedEls).map(el=>{
+          const r = el.getBoundingClientRect();
+          return { top: r.top - cloneTop, bottom: r.bottom - cloneTop };
+        });
+      }catch(e){ console.error('measure safe breaks failed', e); safeBreaks = []; }
+    }
+  });
   document.body.removeChild(node);
-  return canvas;
+  return { canvas, safeBreaks, cssWidth };
 }
-async function canvasToPdfBlob(canvas){
+async function canvasToPdfBlob(captured){
+  const { canvas, safeBreaks, cssWidth } = captured;
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF('p','mm','a4');
   const pageWidth = 210, pageHeight = 297;
-  const imgWidth = pageWidth;
-  const imgHeight = canvas.height * imgWidth / canvas.width;
-  const imgData = canvas.toDataURL('image/jpeg', 0.92);
-  let heightLeft = imgHeight, position = 0;
-  pdf.addImage(imgData,'JPEG',0,position,imgWidth,imgHeight);
-  heightLeft -= pageHeight;
-  while(heightLeft > 0){
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(imgData,'JPEG',0,position,imgWidth,imgHeight);
-    heightLeft -= pageHeight;
+  const marginMm = 10; // 每頁上下各留一點白邊
+  const contentHeightMm = pageHeight - marginMm*2;
+  const imgWidthMm = pageWidth;
+  const imgHeightMm = canvas.height * imgWidthMm / canvas.width;
+  const mmPerCssPx = imgWidthMm / cssWidth;
+  const pxPerMm = canvas.height / imgHeightMm; // 來源畫布：每 mm 對應幾個像素
+  const marginPx = Math.round(marginMm * pxPerMm);
+  const fullPagePx = Math.round(pageHeight * pxPerMm);
+
+  // 把安全斷點轉成 mm，並找出每個不可切斷區塊的 [start, end] 範圍
+  const blocks = safeBreaks.map(b=>({ start: b.top*mmPerCssPx, end: b.bottom*mmPerCssPx }))
+    .sort((a,b)=>a.start-b.start);
+
+  function adjustBreak(candidateY, pageStart){
+    // 如果候選斷點會切到某個保護區塊，把斷點往前移到該區塊開頭（留一點緩衝）
+    for(const b of blocks){
+      if(candidateY > b.start + 1 && candidateY < b.end - 1){
+        return Math.max(b.start, pageStart + 1);
+      }
+    }
+    return candidateY;
   }
-  return pdf.output('blob');
+
+  let cursor = 0; // 目前已經畫到圖片的哪個 mm 位置（從頂端算）
+  let firstPage = true;
+  const pageImages = [];
+  while(cursor < imgHeightMm - 0.5){
+    let breakY = Math.min(cursor + contentHeightMm, imgHeightMm);
+    if(breakY < imgHeightMm) breakY = adjustBreak(breakY, cursor);
+    if(breakY <= cursor + 1){ breakY = Math.min(cursor + contentHeightMm, imgHeightMm); } // 避免異常情況卡住無限迴圈
+
+    const sliceHeightMm = breakY - cursor;
+    const srcY = Math.round(cursor * pxPerMm);
+    const srcH = Math.max(1, Math.min(canvas.height - srcY, Math.round(sliceHeightMm * pxPerMm)));
+
+    // 建立一整頁大小（含留白邊）的畫布，內容置於邊距內，不跟其他頁重複
+    const pageCanvas = document.createElement('canvas');
+    pageCanvas.width = canvas.width;
+    pageCanvas.height = fullPagePx;
+    const ctx = pageCanvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+    ctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, marginPx, canvas.width, srcH);
+    const pageImgData = pageCanvas.toDataURL('image/jpeg', 0.92);
+    pageImages.push(pageImgData);
+
+    if(!firstPage) pdf.addPage();
+    firstPage = false;
+    pdf.addImage(pageImgData, 'JPEG', 0, 0, imgWidthMm, pageHeight);
+
+    cursor = breakY;
+  }
+  return { blob: pdf.output('blob'), pageImages };
 }
 function getPdfFilename(){
   let y=0,m=0,d=0;
@@ -1527,19 +1679,43 @@ function getPdfFilename(){
   const project = (state.meta.project || '報價單').trim();
   return `${rocDate}${project}.pdf`;
 }
+function showPdfPreview(pageImages, url, filename){
+  const pagesEl = document.getElementById('pdf-preview-pages');
+  pagesEl.innerHTML = '';
+  pageImages.forEach((imgData, i)=>{
+    const img = document.createElement('img');
+    img.src = imgData;
+    img.style.cssText = 'width:100%;max-width:700px;box-shadow:0 4px 16px rgba(0,0,0,.3);border-radius:4px;';
+    img.alt = '第 '+(i+1)+' 頁';
+    pagesEl.appendChild(img);
+  });
+  const dl = document.getElementById('pdf-preview-download');
+  dl.href = url; dl.download = filename || 'quote.pdf';
+  document.getElementById('pdf-preview-modal').classList.remove('hidden');
+  document.getElementById('pdf-preview-scroll').scrollTop = 0;
+}
+function closePdfPreview(){
+  const dl = document.getElementById('pdf-preview-download');
+  const src = dl.href;
+  document.getElementById('pdf-preview-modal').classList.add('hidden');
+  document.getElementById('pdf-preview-pages').innerHTML = '';
+  if(src) setTimeout(()=>{ try{ URL.revokeObjectURL(src); }catch(e){} }, 500);
+}
 async function downloadPDF(){
   if(!window.html2canvas || !window.jspdf){ toast('PDF 功能載入中，請稍後再試'); return; }
   const btn = document.getElementById('pdf-btn');
   btn.disabled = true; toast('正在產生 PDF…');
   try{
-    const canvas = await buildAndCapture();
-    const blob = await canvasToPdfBlob(canvas);
+    flushSave().catch(e=>console.error('background save failed', e));
+    const captured = await buildAndCapture();
+    const { blob, pageImages } = await canvasToPdfBlob(captured);
     const url = URL.createObjectURL(blob);
+    const filename = getPdfFilename();
+    showPdfPreview(pageImages, url, filename);
     const a = document.createElement('a');
-    a.href = url; a.download = getPdfFilename();
+    a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url), 5000);
-    toast('PDF 已下載完成');
+    toast('PDF 已產生，可預覽並已下載');
   }catch(err){ console.error(err); toast('產生 PDF 時發生錯誤，請再試一次'); }
   finally{ btn.disabled = false; }
 }
@@ -1548,8 +1724,9 @@ async function shareQuote(){
   const btn = document.getElementById('share-btn');
   btn.disabled = true;
   try{
-    const canvas = await buildAndCapture();
-    const blob = await canvasToPdfBlob(canvas);
+    flushSave().catch(e=>console.error('background save failed', e));
+    const captured = await buildAndCapture();
+    const { blob, pageImages } = await canvasToPdfBlob(captured);
     const filename = getPdfFilename();
     const file = new File([blob], filename, {type:'application/pdf'});
     if(navigator.canShare && navigator.canShare({files:[file]})){
@@ -1571,6 +1748,12 @@ function injectDatalist(){
   UNIT_OPTIONS.forEach(u=>{ const o=document.createElement('option'); o.value=u; dl.appendChild(o); });
   document.body.appendChild(dl);
 }
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='hidden' && currentId){
+    flushSave().catch(e=>console.error(e));
+  }
+});
 
 /* ================= PWA: Service Worker 註冊 ================= */
 if('serviceWorker' in navigator){
